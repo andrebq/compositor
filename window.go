@@ -1,102 +1,181 @@
 package main
 
 import (
-	"context"
-	"image/color"
-	"sync"
-	"time"
+	_ "image/png"
 
-	"github.com/faiface/pixel"
-	"github.com/faiface/pixel/pixelgl"
-	"golang.org/x/image/colornames"
+	"github.com/faiface/glhf"
+	"github.com/faiface/mainthread"
+	"github.com/go-gl/glfw/v3.1/glfw"
 )
 
-type (
-	window struct {
-		sync.Mutex
-		pixw   *pixelgl.Window
-		ctx    context.Context
-		cancel context.CancelFunc
+func run() {
+	var win *glfw.Window
 
-		bg *Image
-	}
-)
-
-func createWindow(ctx context.Context, title string, width, height int) (*window, error) {
-	cfg := pixelgl.WindowConfig{
-		Title:  title,
-		Bounds: pixel.R(0, 0, float64(width), float64(height)),
-		VSync:  true,
-	}
-	win, err := pixelgl.NewWindow(cfg)
-	bg := RandomImage(width, height)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	return &window{
-		pixw:   win,
-		bg:     bg,
-		ctx:    ctx,
-		cancel: cancel,
-	}, nil
-}
-
-func (w *window) Clear(rgba color.RGBA) {
-	w.pixw.Clear(rgba)
-}
-
-func (w *window) Closed() bool {
-	return w.pixw.Closed()
-}
-
-func (w *window) Update() {
-	w.Lock()
-	defer w.Unlock()
-
-	w.bg.pic.Draw(w.pixw, pixel.IM.Moved(w.pixw.Bounds().Center()))
-	w.pixw.Update()
-}
-
-func (w *window) ChangeBG() {
-	w.Lock()
-	defer w.Unlock()
-
-	bg := RandomImage(int(w.pixw.Bounds().W()),
-		int(w.pixw.Bounds().H()))
-	w.bg = bg
-}
-
-func run(ctx context.Context) {
-
-	win, err := createWindow(ctx, "pixel rocks", 1024, 768)
-	if err != nil {
-		panic(err)
-	}
-
-	win.Clear(colornames.Skyblue)
-
-	go func() {
-		for {
-			ticker := time.NewTicker(time.Millisecond * 16)
-			defer ticker.Stop()
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				win.ChangeBG()
-			}
-		}
+	defer func() {
+		mainthread.Call(func() {
+			glfw.Terminate()
+		})
 	}()
 
-	for !win.Closed() {
-		win.Update()
+	mainthread.Call(func() {
+		glfw.Init()
+
+		glfw.WindowHint(glfw.ContextVersionMajor, 3)
+		glfw.WindowHint(glfw.ContextVersionMinor, 3)
+		glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
+		glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
+		glfw.WindowHint(glfw.Resizable, glfw.False)
+
+		var err error
+
+		win, err = glfw.CreateWindow(560, 697, "GLHF Rocks!", nil, nil)
+		if err != nil {
+			panic(err)
+		}
+
+		win.MakeContextCurrent()
+
+		glhf.Init()
+	})
+
+	var (
+		// Here we define a vertex format of our vertex slice. It's actually a basic slice
+		// literal.
+		//
+		// The vertex format consists of names and types of the attributes. The name is the
+		// name that the attribute is referenced by inside a shader.
+		vertexFormat = glhf.AttrFormat{
+			{Name: "position", Type: glhf.Vec2},
+			{Name: "texture", Type: glhf.Vec2},
+		}
+
+		// Here we declare some variables for later use.
+		shader  *glhf.Shader
+		texture *glhf.Texture
+		slice   *glhf.VertexSlice
+	)
+
+	// Here we load an image from a file. The loadImage function is not within the library, it
+	// just loads and returns a image.NRGBA.
+	gopherImage := randomImage(560, 697)
+
+	// Every OpenGL call needs to be done inside the main thread.
+	mainthread.Call(func() {
+		var err error
+
+		// Here we create a shader. The second argument is the format of the uniform
+		// attributes. Since our shader has no uniform attributes, the format is empty.
+		shader, err = glhf.NewShader(vertexFormat, glhf.AttrFormat{}, vertexShader, fragmentShader)
+
+		// If the shader compilation did not go successfully, an error with a full
+		// description is returned.
+		if err != nil {
+			panic(err)
+		}
+
+		// And finally, we make a vertex slice, which is basically a dynamically sized
+		// vertex array. The length of the slice is 6 and the capacity is the same.
+		//
+		// The slice inherits the vertex format of the supplied shader. Also, it should
+		// only be used with that shader.
+		slice = glhf.MakeVertexSlice(shader, 6, 6)
+
+		texture = glhf.NewTexture(
+			gopherImage.Bounds().Dx(),
+			gopherImage.Bounds().Dy(),
+			true,
+			gopherImage.Pix,
+		)
+
+		// Before we use a slice, we need to Begin it. The same holds for all objects in
+		// GLHF.
+		slice.Begin()
+
+		// We assign data to the vertex slice. The values are in the order as in the vertex
+		// format of the slice (shader). Each two floats correspond to an attribute of type
+		// glhf.Vec2.
+		slice.SetVertexData([]float32{
+			-1, -1, 0, 1,
+			+1, -1, 1, 1,
+			+1, +1, 1, 0,
+
+			-1, -1, 0, 1,
+			+1, +1, 1, 0,
+			-1, +1, 0, 0,
+		})
+
+		// When we're done with the slice, we End it.
+		slice.End()
+	})
+
+	var iterCount int
+	shouldQuit := false
+	for !shouldQuit {
+		mainthread.Call(func() {
+			if win.ShouldClose() {
+				shouldQuit = true
+			}
+
+			// Clear the window.
+			glhf.Clear(1, 1, 1, 1)
+
+			iterCount++
+			if iterCount > 20 {
+				iterCount = 0
+				gopherImage = randomImage(560, 697)
+				// We create a texture from the loaded image.
+				texture = glhf.NewTexture(
+					gopherImage.Bounds().Dx(),
+					gopherImage.Bounds().Dy(),
+					true,
+					gopherImage.Pix,
+				)
+			}
+
+			// Here we Begin/End all necessary objects and finally draw the vertex
+			// slice.
+			shader.Begin()
+			texture.Begin()
+			slice.Begin()
+			slice.Draw()
+			slice.End()
+			texture.End()
+			shader.End()
+
+			win.SwapBuffers()
+			glfw.WaitEvents()
+		})
 	}
 }
 
 func main() {
-	ctx := context.Background()
-	pixelgl.Run(func() {
-		run(ctx)
-	})
+	mainthread.Run(run)
 }
+
+var vertexShader = `
+#version 330 core
+
+in vec2 position;
+in vec2 texture;
+
+out vec2 Texture;
+
+void main() {
+	gl_Position = vec4(position, 0.0, 1.0);
+	Texture = texture;
+}
+`
+
+var fragmentShader = `
+#version 330 core
+
+in vec2 Texture;
+
+out vec4 color;
+
+uniform sampler2D tex;
+
+void main() {
+	color = texture(tex, Texture);
+}
+`
