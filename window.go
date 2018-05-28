@@ -1,181 +1,94 @@
 package main
 
 import (
-	_ "image/png"
+	"sync"
 
-	"github.com/faiface/glhf"
-	"github.com/faiface/mainthread"
-	"github.com/go-gl/glfw/v3.1/glfw"
+	"github.com/veandco/go-sdl2/sdl"
 )
 
-func run() {
-	var win *glfw.Window
+type (
+	window struct {
+		sync.Mutex
+		sw *sdl.Window
 
-	defer func() {
-		mainthread.Call(func() {
-			glfw.Terminate()
-		})
-	}()
+		widgets widgets
+	}
+)
 
-	mainthread.Call(func() {
-		glfw.Init()
+func (w *window) addWidget(wi ...*widget) {
+	w.Lock()
+	w.widgets.add(wi...)
+	w.Unlock()
+}
 
-		glfw.WindowHint(glfw.ContextVersionMajor, 3)
-		glfw.WindowHint(glfw.ContextVersionMinor, 3)
-		glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
-		glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
-		glfw.WindowHint(glfw.Resizable, glfw.False)
-
-		var err error
-
-		win, err = glfw.CreateWindow(560, 697, "GLHF Rocks!", nil, nil)
-		if err != nil {
-			panic(err)
-		}
-
-		win.MakeContextCurrent()
-
-		glhf.Init()
-	})
-
-	var (
-		// Here we define a vertex format of our vertex slice. It's actually a basic slice
-		// literal.
-		//
-		// The vertex format consists of names and types of the attributes. The name is the
-		// name that the attribute is referenced by inside a shader.
-		vertexFormat = glhf.AttrFormat{
-			{Name: "position", Type: glhf.Vec2},
-			{Name: "texture", Type: glhf.Vec2},
-		}
-
-		// Here we declare some variables for later use.
-		shader  *glhf.Shader
-		texture *glhf.Texture
-		slice   *glhf.VertexSlice
+func newWindow(windows *windowList, title string, w, h int) (*window, error) {
+	sw, err := sdl.CreateWindow(
+		title,
+		sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
+		w, h,
+		0,
 	)
 
-	// Here we load an image from a file. The loadImage function is not within the library, it
-	// just loads and returns a image.NRGBA.
-	gopherImage := randomImage(560, 697)
+	if err != nil {
+		return nil, err
+	}
 
-	// Every OpenGL call needs to be done inside the main thread.
-	mainthread.Call(func() {
-		var err error
-
-		// Here we create a shader. The second argument is the format of the uniform
-		// attributes. Since our shader has no uniform attributes, the format is empty.
-		shader, err = glhf.NewShader(vertexFormat, glhf.AttrFormat{}, vertexShader, fragmentShader)
-
-		// If the shader compilation did not go successfully, an error with a full
-		// description is returned.
-		if err != nil {
-			panic(err)
-		}
-
-		// And finally, we make a vertex slice, which is basically a dynamically sized
-		// vertex array. The length of the slice is 6 and the capacity is the same.
-		//
-		// The slice inherits the vertex format of the supplied shader. Also, it should
-		// only be used with that shader.
-		slice = glhf.MakeVertexSlice(shader, 6, 6)
-
-		texture = glhf.NewTexture(
-			gopherImage.Bounds().Dx(),
-			gopherImage.Bounds().Dy(),
-			true,
-			gopherImage.Pix,
-		)
-
-		// Before we use a slice, we need to Begin it. The same holds for all objects in
-		// GLHF.
-		slice.Begin()
-
-		// We assign data to the vertex slice. The values are in the order as in the vertex
-		// format of the slice (shader). Each two floats correspond to an attribute of type
-		// glhf.Vec2.
-		slice.SetVertexData([]float32{
-			-1, -1, 0, 1,
-			+1, -1, 1, 1,
-			+1, +1, 1, 0,
-
-			-1, -1, 0, 1,
-			+1, +1, 1, 0,
-			-1, +1, 0, 0,
-		})
-
-		// When we're done with the slice, we End it.
-		slice.End()
+	window := windows.addWindow(&window{
+		sw:      sw,
+		widgets: make(widgets, 0, 10),
 	})
 
-	var iterCount int
-	shouldQuit := false
-	for !shouldQuit {
-		mainthread.Call(func() {
-			if win.ShouldClose() {
-				shouldQuit = true
-			}
+	background, err := newWidget(0, 0, w, h)
+	if err != nil {
+		return nil, err
+	}
+	background.clear(randomColor())
 
-			// Clear the window.
-			glhf.Clear(1, 1, 1, 1)
+	leftCorner, err := newWidget(0, 0, w/2, h/2)
+	if err != nil {
+		return nil, err
+	}
 
-			iterCount++
-			if iterCount > 20 {
-				iterCount = 0
-				gopherImage = randomImage(560, 697)
-				// We create a texture from the loaded image.
-				texture = glhf.NewTexture(
-					gopherImage.Bounds().Dx(),
-					gopherImage.Bounds().Dy(),
-					true,
-					gopherImage.Pix,
-				)
-			}
+	rightCorner, err := newWidget(w/2, h/2, w/2, h/2)
+	if err != nil {
+		return nil, err
+	}
 
-			// Here we Begin/End all necessary objects and finally draw the vertex
-			// slice.
-			shader.Begin()
-			texture.Begin()
-			slice.Begin()
-			slice.Draw()
-			slice.End()
-			texture.End()
-			shader.End()
+	window.addWidget(background, leftCorner, rightCorner)
+	return window, err
+}
 
-			win.SwapBuffers()
-			glfw.WaitEvents()
-		})
+func (w *window) background() *widget {
+	return w.widgets[0]
+}
+
+func (w *window) handleKeyUp(k *sdl.KeyUpEvent) {
+	println("window.handleKeyUp")
+	if k.Keysym.Sym == sdl.K_SPACE {
+		w.background().clear(randomColor())
 	}
 }
 
-func main() {
-	mainthread.Run(run)
+func (w *window) draw() {
+	dest, err := w.sw.GetSurface()
+	if err != nil {
+		return
+	}
+
+	var invalidatedRect sdl.Rect
+	var rects []sdl.Rect
+	for _, widget := range w.widgets {
+		if !widget.needRepaint(dest) && !widget.rect.HasIntersection(&invalidatedRect) {
+			continue
+		}
+		widget.draw(dest)
+		rects = append(rects, widget.rect)
+		invalidatedRect = widget.mergeRect(invalidatedRect)
+	}
+
+	if len(rects) == 0 {
+		return
+	}
+
+	w.sw.UpdateSurfaceRects(rects)
 }
-
-var vertexShader = `
-#version 330 core
-
-in vec2 position;
-in vec2 texture;
-
-out vec2 Texture;
-
-void main() {
-	gl_Position = vec4(position, 0.0, 1.0);
-	Texture = texture;
-}
-`
-
-var fragmentShader = `
-#version 330 core
-
-in vec2 Texture;
-
-out vec4 color;
-
-uniform sampler2D tex;
-
-void main() {
-	color = texture(tex, Texture);
-}
-`
